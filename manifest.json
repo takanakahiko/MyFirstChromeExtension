@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
-  "name": "Link Checker",
-  "description": "This extension detect broken link and blank link.",
+  "name": "Portal Hacker",
+  "description": "おれは神になる",
   "version": "1.0",
   "icons": {
     "16": "images/icon/icon_16.png",
@@ -25,7 +25,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://tnp.takushoku-u.ac.jp/campusp/sservice/*"
+        "https://tnp.takushoku-u.ac.jp/campusp/sservice/start.do"
       ],
       "css": ["css/contents_style.css"],
       "js": ["js/content_scripts/common.js"]
