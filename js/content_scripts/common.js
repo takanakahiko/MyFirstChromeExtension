@@ -12,4 +12,6 @@
     }
   });
 
+  console.log("test");
+
 }).call(this);
