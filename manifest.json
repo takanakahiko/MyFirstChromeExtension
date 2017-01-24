@@ -25,7 +25,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://tnp.takushoku-u.ac.jp/campusp/sservice/start.do"
+        "https://tnp.takushoku-u.ac.jp/campusp/sservice/*"
       ],
       "css": ["css/contents_style.css"],
       "js": ["js/content_scripts/common.js"]
