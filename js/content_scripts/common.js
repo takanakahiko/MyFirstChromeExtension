@@ -27,6 +27,13 @@ $(() => {
 });
 
 function initContext() {
+
+  context = {};
+  const match = window.location.href.match(/http:\/\/jsdo\.it\/([^/]*)\/([^/]*)\/edit/);
+  if (!match) return Promise.reject(new Error("not match"));
+  context.isBound = match[1] === "/macros";
+  context.id = match[2];
+
   return new Promise((resolve, reject) => {
     chrome.storage.sync.get(["token","user", "baseUrl", "bindRepo", "bindBranch"], (item) => {
       if (!item.token) {
@@ -40,6 +47,21 @@ function initContext() {
       resolve();
     });
   })
+}
+
+function initPageEvent(){
+  $('#github-push-button')
+  .click(function(){
+    initProjectContext()
+    .then(prepareCode)
+    .then(githubPush);
+  });
+  $('#github-pull-button')
+  .click(function(){
+    initProjectContext()
+    .then(prepareCode)
+    .then(githubPull);
+  });
 }
 
 function initPageContent() {
@@ -131,7 +153,6 @@ function followPaginate(data) {
   });
 }
 
-
 function getAllItems(promise) {
   return promise.then(followPaginate)
   .then((data) => {
@@ -174,14 +195,13 @@ function updateRepo(repos) {
     content = { name: name, fullName : fullName };
     label = name;
     context['repo'] = content;
-    const bindName = `bindRepo`;
-    Object.assign(context[bindName], { [context.id] : content });
-    chrome.storage.sync.set({ [bindName]: context[bindName] }, () => {
+    Object.assign(context[`bindRepo`], { [context.id] : content });
+    chrome.storage.sync.set({ [`bindRepo`]: context[`bindRepo`] }, () => {
       updateBranch();
     });
   })
   if (context.repo){
-    $("select").val(repo.fullName);
+    $("select").val(context.repo.fullName);
     return context.repo.name;
   }
   return null;
@@ -193,16 +213,13 @@ function updateBranch() {
   }
   return getAllItems(Promise.resolve({items: [], url: `${baseUrl}/repos/${context.repo.fullName}/branches?access_token=${accessToken}`}))
   .then((branches) => {
-
     $('#github-branch-menu').empty().append('<option>Create new repo</option>');
-
     for(let branch of branches){
       let content = $('<option>')
       .attr('value', branch.fullName)
       .text( branch.name );
       $('#github-branch-menu').append(content);
     }
-
     let branch = context.bindBranch[context.id];
     if (!branch && branches.length === 0) {
       branch = "";
@@ -219,5 +236,249 @@ function updateBranch() {
   });
 }
 
-function initPageEvent(){
+function initProjectContext() {
+
+  let promises = [];
+
+  let js = new Promise((resolve, reject) => {
+    resolve({
+      file : "script.js",
+      content: $('#codeJS').val()
+    });
+  })
+  promises.push(js);
+
+  let html = new Promise((resolve, reject) => {
+    resolve({
+      file : "index.html",
+      content: $('#codeHTML').val()
+    });
+  })
+  promises.push(html);
+
+  let css = new Promise((resolve, reject) => {
+    resolve({
+      file : "style.css",
+      content: $('#codeCSS').val()
+    });
+  })
+  promises.push(css);
+
+  return Promise.all(promises);
+}
+
+function prepareCode(jsdoitFiles) {
+  return new Promise((resolve, reject) => {
+    $.getJSON(
+      `${baseUrl}/repos/${context.repo.fullName}/branches/${context.branch}`,
+      { access_token: accessToken }
+    )
+    .then(resolve)
+    .fail(reject);
+  })
+  .then((response) => {
+    return $.getJSON(
+      `${baseUrl}/repos/${context.repo.fullName}/git/trees/${response.commit.commit.tree.sha}`,
+      { recursive: 1, access_token: accessToken }
+    );
+  })
+  .then((response) => {
+    const promises = response.tree.filter((tree) => {
+      return tree.type === 'blob' && /(\.css|\.html|\.js)$/.test(tree.path);
+    })
+    .map((tree) => {
+      return new Promise((resolve, reject) => {
+        $.getJSON(tree.url, {access_token: accessToken })
+        .then((content) => {
+          resolve({ file: tree.path, content: decodeURIComponent(escape(atob(content.content)))});
+        })
+        .fail(reject)
+      });
+    });
+    return Promise.all(promises);
+  })
+  .then((data) => {
+    const files = $('.item').toArray().reduce((hash, e) => {
+      const match = e.innerText.match(/(.*?)\.(gs|html)$/);
+      if (!match || !match[1] || !match[2]) return hash;
+      hash[match[1]] = match[0];
+      return hash;
+
+    }, {});
+    const code = {
+      jsdoit: jsdoitFiles.reduce((hash, elem) => {
+        if (elem) hash[elem.file] = elem.content;
+        return hash;
+      }, {}),
+      github: data.reduce((hash, elem) => {
+        if (elem) hash[elem.file] = elem.content;
+        return hash;
+      }, {})
+    }
+    console.log(code);
+    return code;
+  })
+}
+
+function githubPush(code) {
+  const promises = ["script.js","index.html","style.css"].map((elem) => {
+    const file = elem;
+    const payload = {
+      content: code.jsdoit[file],
+      encoding: "utf-8"
+    };
+    return $.ajax({
+      url: `${baseUrl}/repos/${context.repo.fullName}/git/blobs`,
+      headers: {
+        "Authorization": `token ${accessToken}`
+      },
+      method: 'POST',
+      crossDomain: true,
+      dataType: 'json',
+      contentType: 'application/json',
+      data: JSON.stringify(payload)
+    })
+    .then((response) => {
+      return {file: file, blob: response};
+    })
+  });
+  if (promises.length === 0) {
+    showAlert("Nothing to do", LEVEL_WARN);
+    return;
+  }
+
+  Promise.all([
+    Promise.all(promises),
+    $.getJSON(
+      `${baseUrl}/repos/${context.repo.fullName}/branches/${context.branch}`,
+      { access_token: accessToken }
+    )
+  ])
+  .then((responses) => {
+    const tree = responses[0].map((data) => {
+      return {
+        path: data.file,
+        mode: "100644",
+        type: "blob",
+        sha: data.blob.sha
+      }
+    });
+    const payload = {
+      base_tree: responses[1].commit.commit.tree.sha,
+      tree: tree
+    };
+    return $.ajax({
+      url: `${baseUrl}/repos/${context.repo.fullName}/git/trees`,
+      headers: {
+        "Authorization": `token ${accessToken}`
+      },
+      method: 'POST',
+      crossDomain: true,
+      dataType: 'json',
+      contentType: 'application/json',
+      data: JSON.stringify(payload)
+    })
+    .then((response) => {
+      return Object.assign(response, { parent: responses[1].commit.sha })
+    });
+  })
+  .then((response) => {
+    const payload = {
+      message: "commit from jsdo.it",
+      tree: response.sha,
+      parents: [
+        response.parent
+      ]
+    };
+    console.log(JSON.stringify(payload));
+    return $.ajax({
+      url: `${baseUrl}/repos/${context.repo.fullName}/git/commits`,
+      headers: {
+        "Authorization": `token ${accessToken}`
+      },
+      method: 'POST',
+      crossDomain: true,
+      dataType: 'json',
+      contentType: 'application/json',
+      data: JSON.stringify(payload)
+    });
+  })
+  .then((response) => {
+     const payload = {
+      force: true,
+      sha: response.sha
+    };
+    return $.ajax({
+      url: `${baseUrl}/repos/${context.repo.fullName}/git/refs/heads/${context.branch}`,
+      headers: {
+        "Authorization": `token ${accessToken}`
+      },
+      method: 'PATCH',
+      crossDomain: true,
+      dataType: 'json',
+      contentType: 'application/json',
+      data: JSON.stringify(payload)
+    });
+  })
+  .then(() => {
+    showAlert(`Successfully push to ${context.branch} of ${context.repo.name}`);
+  })
+  .catch((err) => {
+    showAlert("Failed to push", LEVEL_ERROR);
+  });
+}
+
+
+function githubPull(code) {
+  const promises = ["script.js","index.html","style.css"].map((elem) => {
+    const file = elem;
+    const match = file.match(/(.*?)\.(js|html|css)$/);
+    if (!match || !match[1] || !match[2]) {
+      showAlert('Unknow Error', LEVEL_ERROR);
+      return;
+    }
+    const name = match[1];
+    const type = match[2];
+
+    if (!code.jsdoit[file]) {
+      return jsdoitCreateFile(name, type)
+      .then(() => {
+        return jsdoitUpdateFile(name, code.github[file]);
+      })
+    } else {
+      return jsdoitUpdateFile(name, code.github[file]);
+    }
+  });
+  if (promises.length === 0) {
+    showAlert("Nothing to do", LEVEL_WARN);
+    return;
+  }
+
+  initProjectContext()
+  .then(() => {
+    return Promise.all(promises);
+  })
+  .then(() => {
+    showAlert("Successfully pulled from github");
+    location.reload();
+  })
+  .catch((err) => {
+    console.log(err.message);
+  });
+}
+
+
+function jsdoitUpdateFile(file, code) {
+  return new Promise((resolve, reject) => {
+    console.log(file);
+    switch(file){
+      case "script":
+      $('#codeJS').val(code).text(code);break;
+      case "index":
+      $('#codeHTML').val(code).text(code);break;
+      case "style":
+      $('#codeCSS').val(code).text(code);break;
+    }
+    resolve();
+  });
 }
